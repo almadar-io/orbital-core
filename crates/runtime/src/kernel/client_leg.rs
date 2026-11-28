@@ -1291,6 +1291,14 @@ impl RuntimeKernel {
             .mount
             .as_ref()
             .is_some_and(|seeds| !seeds.is_empty());
+        if let Some(seeds) = request.mount.as_ref().filter(|_| mounting && request.client_id.is_some()) {
+            let page = request.route.as_deref().and_then(|route| self.page_circuit(None, Some(route)).ok()).filter(|circuit| circuit.page.is_some());
+            let entering = match page {
+                Some(circuit) => circuit.traits,
+                None => seeds.iter().map(|seed| seed.r#trait.clone()).collect(),
+            };
+            self.start_from_initial(&entering);
+        }
         if (request.traits.is_some() || request.entity_by_trait.is_some()) && !mounting {
             let carried = request.traits.as_deref().unwrap_or_default();
             // A leg carries one entry per step a trait took; its target replays from the entry of the replayed event.

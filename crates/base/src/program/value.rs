@@ -234,9 +234,77 @@ impl<T: Serialize> Serialize for Shared<T> {
     }
 }
 
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {
+impl<'de, T: Deserialize<'de> + 'static> Deserialize<'de> for Shared<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        T::deserialize(deserializer).map(Shared::new)
+        deserializer.deserialize_newtype_struct(crate::value_deserialize::SHARED_NEWTYPE, SharedRead(std::marker::PhantomData))
+    }
+}
+
+struct SharedRead<T>(std::marker::PhantomData<T>);
+
+impl<'de, T: Deserialize<'de> + 'static> serde::de::Visitor<'de> for SharedRead<T> {
+    type Value = Shared<T>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a shared value")
+    }
+
+    fn visit_newtype_struct<D: Deserializer<'de>>(self, deserializer: D) -> Result<Shared<T>, D::Error> {
+        let node = crate::value_deserialize::take_shared_node();
+        if let Some(read) = crate::value_deserialize::shared_read::<Shared<T>>(node) {
+            return Ok(read);
+        }
+        let read = Shared::new(T::deserialize(deserializer)?);
+        crate::value_deserialize::shared_keep(node, &read);
+        Ok(read)
+    }
+    // A format that reads a newtype as its content hands the content here; it is read as `T` reads it.
+    fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::BoolDeserializer::new(v)).map(Shared::new)
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::I64Deserializer::new(v)).map(Shared::new)
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::U64Deserializer::new(v)).map(Shared::new)
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::F64Deserializer::new(v)).map(Shared::new)
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::StrDeserializer::new(v)).map(Shared::new)
+    }
+
+    fn visit_borrowed_str<E: serde::de::Error>(self, v: &'de str) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::BorrowedStrDeserializer::new(v)).map(Shared::new)
+    }
+
+    fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::StringDeserializer::new(v)).map(Shared::new)
+    }
+
+    fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::BytesDeserializer::new(v)).map(Shared::new)
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Shared<T>, E> {
+        T::deserialize(serde::de::value::UnitDeserializer::new()).map(Shared::new)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<Shared<T>, A::Error> {
+        T::deserialize(serde::de::value::SeqAccessDeserializer::new(seq)).map(Shared::new)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Shared<T>, A::Error> {
+        T::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(Shared::new)
+    }
+
+    fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Shared<T>, A::Error> {
+        T::deserialize(serde::de::value::EnumAccessDeserializer::new(data)).map(Shared::new)
     }
 }
 

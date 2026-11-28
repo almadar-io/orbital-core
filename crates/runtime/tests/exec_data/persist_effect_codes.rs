@@ -446,6 +446,119 @@ fn control_a_route_less_driver_answers_the_same_ask_after_a_delivery_to_itself()
     assert!(seen.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "{seen:?}");
 }
 
+// G-CROSS-852 + EXEC-STORE-4: once the kernel has read a driver's answer, the ask's frame is gone, so a driver that
+// leaves its fields set (std-firestore, std-http-client, std-timeout did) does not leave an instance per ask behind.
+fn stateful_driver_program(resets: bool) -> OrbitalSchema {
+    let done = if resets { serde_json::json!([["set", "@entity.phase", ""]]) } else { serde_json::json!([]) };
+    let mut found = done.as_array().unwrap().clone();
+    found.push(serde_json::json!(["emit", "ROW_FOUND", { "key": "@payload.key", "row": { "id": "@payload.id", "used": false } }]));
+    let mut program = store_program_json(true, false, None);
+    program["orbitals"][1]["entity"] = serde_json::json!({ "name": "Flight", "persistence": "runtime",
+        "fields": [{ "name": "id", "type": "string" }, { "name": "phase", "type": "string", "default": "" }] });
+    program["orbitals"][1]["traits"] = serde_json::json!([
+        { "name": "RowsDriver", "linkedEntity": "Flight",
+          "emits": [{ "event": "HELP", "scope": "internal", "payloadSchema": [{ "name": "key", "type": "string" }, { "name": "id", "type": "string" }] }],
+          "listens": [{ "event": "HELPED", "triggers": "RD_NEXT", "source": { "kind": "trait", "trait": "RowsHelper" } }],
+          "stateMachine": { "states": [{ "name": "ready", "isInitial": true }, { "name": "busy" }],
+            "events": [{ "key": "ROW_READ", "name": "ROW_READ" }, { "key": "RD_NEXT", "name": "RD_NEXT" }],
+            "transitions": [
+                { "from": "ready", "to": "busy", "event": "ROW_READ",
+                  "effects": [["set", "@entity.phase", "read"], ["emit", "HELP", { "key": "@payload.key", "id": "@payload.id" }]] },
+                { "from": "busy", "to": "ready", "event": "RD_NEXT", "effects": found }] } },
+        { "name": "RowsHelper", "linkedEntity": "Flight",
+          "emits": [{ "event": "HELPED", "scope": "internal", "payloadSchema": [{ "name": "key", "type": "string" }, { "name": "id", "type": "string" }] }],
+          "listens": [{ "event": "HELP", "triggers": "HELP", "source": { "kind": "trait", "trait": "RowsDriver" } }],
+          "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+            "events": [{ "key": "HELP", "name": "HELP" }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "HELP",
+                "effects": [["set", "@entity.phase", if resets { "" } else { "helped" }], ["emit", "HELPED", { "key": "@payload.key", "id": "@payload.id" }]] }] } }
+    ]);
+    program["orbitals"][0]["pages"] = serde_json::json!([{ "name": "Home", "path": "/", "traits": [{ "ref": "Desk" }] }]);
+    from_json_value(&program).unwrap()
+}
+
+/// The kernel's live instance count after each of `looks` fetches through the driver, and what each fetch saw.
+fn instances_after_looks(program: OrbitalSchema, looks: usize) -> (Vec<usize>, Vec<bool>) {
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    kernel.register_schema(program).unwrap();
+    let host_rows = InMemoryEntityCache::new();
+    let mut counts = Vec::new();
+    let mut seen = Vec::new();
+    for _ in 0..looks {
+        let payload: Value = from_json_value(&serde_json::json!({ "id": "t1" })).unwrap();
+        let progress = kernel.start_dispatch("Desk", None, "LOOK", payload, None, None).unwrap();
+        let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &|request| {
+            BlockingHost { source: &host_rows, service: None, substrate: None }.answer(request)
+        })
+        .unwrap();
+        let results = EventResponse::from_process_results(&outcomes, "Desk", "LOOK").effect_results;
+        seen.push(results.iter().flatten().map(|r| serde_json::to_value(r).unwrap()).any(|r| r["effect"] == "emit" && r["target"] == "SEEN"));
+        counts.push(kernel.stats().active_instances);
+    }
+    (counts, seen)
+}
+
+#[test]
+fn an_answered_store_ask_leaves_no_instance_of_its_driver_or_its_helper_behind() {
+    let (counts, seen) = instances_after_looks(stateful_driver_program(false), 3);
+    assert_eq!(seen, vec![true, true, true], "every fetch read its row");
+    assert_eq!(counts[0], counts[2], "three fetches hold what one does: {counts:?}");
+}
+
+#[test]
+fn edge_a_driver_that_resets_its_fields_leaves_none_either() {
+    let (counts, seen) = instances_after_looks(stateful_driver_program(true), 3);
+    assert_eq!(seen, vec![true, true, true]);
+    assert_eq!(counts[0], counts[2], "{counts:?}");
+}
+
+// std-http-client closes its socket after it has replied: that helper's instance stays until the close lands.
+#[test]
+fn an_answered_store_asks_helper_still_closing_is_dropped_once_its_close_lands() {
+    let mut program = serde_json::to_value(stateful_driver_program(false)).unwrap();
+    let helper = &mut program["orbitals"][1]["traits"][1]["stateMachine"];
+    helper["events"].as_array_mut().unwrap().push(serde_json::json!({ "key": "CLOSED", "name": "CLOSED" }));
+    let transitions = helper["transitions"].as_array_mut().unwrap();
+    transitions[0]["effects"].as_array_mut().unwrap().push(serde_json::json!(["call-service", "svc", "close", {},
+        { "key": "@payload.key", "emit": { "success": "CLOSED", "failure": "CLOSED" } }]));
+    transitions.push(serde_json::json!({ "from": "idle", "to": "idle", "event": "CLOSED", "effects": [] }));
+    let config = orbital_core_runtime::config::KernelConfig {
+        service_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::ServiceHandler>),
+        ..Default::default()
+    };
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>, config);
+    kernel.register_schema(from_json_value(&program).unwrap()).unwrap();
+    let host_rows = InMemoryEntityCache::new();
+    let payload: Value = from_json_value(&serde_json::json!({ "id": "t1" })).unwrap();
+    let progress = kernel.start_dispatch("Desk", None, "LOOK", payload, None, None).unwrap();
+    let asked = std::sync::Mutex::new(Vec::new());
+    let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &|request| {
+        asked.lock().unwrap().push(format!("{request:?}"));
+        match request {
+            IoRequest::CallService { .. } => orbital_core_runtime::resumable::IoAnswer::ServiceDeferred,
+            other => BlockingHost { source: &host_rows, service: None, substrate: None }.answer(other),
+        }
+    })
+    .unwrap();
+    let pending = kernel.pending_asks();
+    assert!(!pending.is_empty(), "the helper's close is in flight: asked {:?}", asked.lock().unwrap());
+    let seen = EventResponse::from_process_results(&outcomes, "Desk", "LOOK").effect_results;
+    assert!(seen.iter().flatten().any(|r| r.target.as_deref() == Some("SEEN")), "the fetch read its row: {seen:?}");
+    for close in &pending {
+        assert!(kernel.get_state("RowsHelper", Some(&close.key)).is_some(), "the helper waits for its close: {close:?}");
+        assert!(kernel.get_state("RowsDriver", Some(&close.key)).is_none(), "control: the driver itself is gone at once: {close:?}");
+    }
+    for close in &pending {
+        let closed: Value = from_json_value(&serde_json::json!({ "key": close.key })).unwrap();
+        kernel.dispatch("RowsHelper", Some(&close.key), "CLOSED", closed).unwrap();
+        assert!(kernel.get_state("RowsHelper", Some(&close.key)).is_none(), "the close landed and the helper went: {close:?}");
+    }
+}
+
 // `persist delete … { where: (fn row …) }`: ONE conditional op; a row the guard rejects is `not-found` (EXEC-STEP-8).
 fn guarded_take(id: &str, guarded: bool) -> serde_json::Value {
     let program = store_program_seeded(false, false);

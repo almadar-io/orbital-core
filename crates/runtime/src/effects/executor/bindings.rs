@@ -174,22 +174,12 @@ impl EffectExecutor {
         }
     }
 
-    /// Resolve every `@`-binding in a `persist` effect's data — the canonical walker lives on
-    /// `BindingContext::resolve_data`; this is a thin forwarder for in-executor callers.
-    pub(super) fn resolve_value_bindings<'v>(
-        &self,
-        value: &'v Value,
-        ctx: &BindingContext,
-    ) -> std::borrow::Cow<'v, Value> {
-        ctx.resolve_data(value)
-    }
-
     /// Resolve a `persist` effect's `data` argument for real, not just
     /// sigil-substitute it. `data` came from `parse_persist`, which converts
     /// the authored `SExpression` straight to `Value` — a CALL expression
     /// like `(object/merge ?data {field: @user.id})` survives that
     /// conversion as a literal `["object/merge", ...]` array, and
-    /// `resolve_value_bindings`/`ctx.resolve_value` only walks the tree
+    /// plain binding substitution only walks the tree
     /// substituting leaf `@`-sigils; it never dispatches a call, so the
     /// merge itself silently never ran (C-PERSIST-DATA-CALL-EXPR-NEVER-
     /// EVALUATED — invisible until an access-policy check read a field back
@@ -197,20 +187,17 @@ impl EffectExecutor {
     /// Round-tripping through the full evaluator dispatches calls AND
     /// substitutes bindings identically to the old path for plain literal
     /// data, so this is a strict superset, not a behavior change for the
-    /// common case. Evaluation failure falls back to the old plain
-    /// substitution rather than hard-failing the persist.
-    pub(super) fn resolve_persist_data<'v>(
+    /// common case. A data expression that fails to evaluate fails the persist: the
+    /// unevaluated call is never written as a value (G-CROSS-849).
+    pub(super) fn resolve_persist_data(
         &self,
-        data: &'v Value,
+        data: &Value,
         ctx: &BindingContext,
-    ) -> std::borrow::Cow<'v, Value> {
-        match SExpression::try_from(data.clone()).map_err(Into::into).and_then(|expr| Evaluator::new().evaluate(&expr, ctx)) {
-            Ok(evaluated) => std::borrow::Cow::Owned(evaluated),
-            Err(err) => {
-                warn!(error = %err, "persist data failed to evaluate; falling back to plain binding substitution");
-                self.resolve_value_bindings(data, ctx)
-            }
-        }
+    ) -> Result<Value, String> {
+        SExpression::try_from(data.clone())
+            .map_err(Into::into)
+            .and_then(|expr| Evaluator::new().evaluate(&expr, ctx))
+            .map_err(|err| format!("persist data failed to evaluate: {err}"))
     }
 
     /// Resolve the target row id for `update` — the effect's own `id` arg

@@ -178,15 +178,22 @@ impl EffectExecutor {
                 out[k] = Some(self.execute(effect, ctx));
                 continue;
             };
-            let resolved = self.resolve_persist_data(data, ctx);
             let mut result_effect = effect.clone();
             if let Effect::Persist { emit, .. } = &mut result_effect {
                 *emit = None;
             }
+            let resolved = match self.resolve_persist_data(data, ctx) {
+                Ok(resolved) => resolved,
+                Err(message) => {
+                    self.log_store_failure("Persist", entity_type, &message);
+                    out[k] = Some(EffectResult::failed(result_effect, &message));
+                    continue;
+                }
+            };
             match self.prepare_push(
                 *operation,
                 entity_type,
-                resolved.as_ref(),
+                &resolved,
                 id.as_deref(),
                 ctx,
                 result_effect.clone(),
@@ -199,7 +206,7 @@ impl EffectExecutor {
                     out[k] = Some(self.persist_resolved(
                         *operation,
                         entity_type,
-                        resolved.as_ref(),
+                        &resolved,
                         id.as_deref(),
                         ctx,
                         result_effect,

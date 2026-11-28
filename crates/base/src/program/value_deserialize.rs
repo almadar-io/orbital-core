@@ -7,9 +7,77 @@ use serde::forward_to_deserialize_any;
 
 type Error = serde_json::Error;
 
-/// `T` read from `value`, as `from_json_value(&value_to_json(value))` reads it.
+/// `T` read from `value`, as `from_json_value(&value_to_json(value))` reads it. A `Shared` record read twice from one
+/// source node (an interned program subtree) is read once and shared, so a program holds each repeat once in memory.
 pub fn from_value<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, Error> {
+    let _scope = SharedScope::open();
     T::deserialize(Reader(value))
+}
+
+/// The newtype name `Shared` asks for, so the reader can tell it which source node it reads.
+pub(crate) const SHARED_NEWTYPE: &str = "$orbital::Shared";
+
+type SharedMemo = std::collections::HashMap<(usize, std::any::TypeId), Box<dyn std::any::Any>>;
+
+thread_local! {
+    static SHARED_MEMO: std::cell::RefCell<Option<SharedMemo>> = const { std::cell::RefCell::new(None) };
+    static SHARED_NODE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The memo lives for the outermost `from_value` only, while every node it is keyed by is borrowed.
+struct SharedScope(bool);
+
+impl SharedScope {
+    fn open() -> Self {
+        SharedScope(SHARED_MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            let outer = m.is_none();
+            if outer {
+                *m = Some(SharedMemo::new());
+            }
+            outer
+        }))
+    }
+}
+
+impl Drop for SharedScope {
+    fn drop(&mut self) {
+        if self.0 {
+            SHARED_MEMO.with(|m| m.borrow_mut().take());
+        }
+    }
+}
+
+fn node_key(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => crate::value::Shared::as_ptr(map) as usize,
+        Value::Array(items) => crate::value::Shared::as_ptr(items) as usize,
+        Value::String(text) => crate::value::Shared::as_ptr(text) as usize,
+        _ => 0,
+    }
+}
+
+/// The source node the reader is on for this `Shared` read, once; 0 outside a `from_value` read.
+pub(crate) fn take_shared_node() -> usize {
+    SHARED_NODE.with(|n| n.replace(0))
+}
+
+pub(crate) fn shared_read<R: Clone + 'static>(node: usize) -> Option<R> {
+    if node == 0 {
+        return None;
+    }
+    SHARED_MEMO.with(|m| m.borrow().as_ref().and_then(|memo| memo.get(&(node, std::any::TypeId::of::<R>())).and_then(|hit| hit.downcast_ref::<R>().cloned())))
+}
+
+pub(crate) fn shared_keep<R: Clone + 'static>(node: usize, read: &R) {
+    if node == 0 {
+        return;
+    }
+    SHARED_MEMO.with(|m| {
+        if let Some(memo) = m.borrow_mut().as_mut() {
+            memo.insert((node, std::any::TypeId::of::<R>()), Box::new(read.clone()));
+        }
+    });
 }
 
 /// A whole number `value_to_json` writes as an integer, else `None` (it writes a float, or null when not finite).
@@ -89,7 +157,10 @@ impl<'de> de::Deserializer<'de> for Reader<'de> {
         }
     }
 
-    fn deserialize_newtype_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_newtype_struct<V: Visitor<'de>>(self, name: &'static str, visitor: V) -> Result<V::Value, Error> {
+        if name == SHARED_NEWTYPE {
+            SHARED_NODE.with(|n| n.set(node_key(self.0)));
+        }
         visitor.visit_newtype_struct(self)
     }
 
@@ -340,6 +411,51 @@ mod tests {
         let through_json: Value = from_json_value(&serde_json::to_value(&program).unwrap()).expect("reads the copy");
         assert_eq!(value_to_json(&direct), value_to_json(&through_json));
         assert_eq!(direct, through_json);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct TwoLists {
+        a: crate::value::Shared<Vec<crate::schema::types::PayloadField>>,
+        b: crate::value::Shared<Vec<crate::schema::types::PayloadField>>,
+    }
+
+    fn fields() -> Value {
+        value_of(serde_json::json!([{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }]))
+    }
+
+    #[test]
+    fn one_shared_source_node_reads_into_one_shared_record() {
+        let list = fields();
+        let mut map = crate::value::ValueMap::default();
+        map.insert("a".into(), list.clone());
+        map.insert("b".into(), list);
+        let read: TwoLists = from_value(&Value::object(map)).expect("reads");
+        assert!(crate::value::Shared::ptr_eq(&read.a, &read.b), "the two holders of one source list hold two copies");
+    }
+
+    #[test]
+    fn control_two_equal_but_separate_source_nodes_read_into_separate_records() {
+        let mut map = crate::value::ValueMap::default();
+        map.insert("a".into(), fields());
+        map.insert("b".into(), fields());
+        let read: TwoLists = from_value(&Value::object(map)).expect("reads");
+        assert!(!crate::value::Shared::ptr_eq(&read.a, &read.b));
+        assert_eq!(serde_json::to_value(&*read.a).unwrap(), serde_json::to_value(&*read.b).unwrap());
+    }
+
+    #[test]
+    fn control_a_shared_record_read_through_json_is_its_own_copy() {
+        let read: TwoLists = from_json_value(&serde_json::json!({ "a": [{ "name": "id", "type": "string" }], "b": [{ "name": "id", "type": "string" }] })).expect("reads");
+        assert!(!crate::value::Shared::ptr_eq(&read.a, &read.b));
+    }
+
+    /// A program holds tens of thousands of these records; a rare nested part is boxed so it costs a pointer when absent.
+    #[test]
+    fn program_records_stay_small() {
+        use crate::schema::types::*;
+        assert!(std::mem::size_of::<PayloadField>() <= 192, "PayloadField grew to {}", std::mem::size_of::<PayloadField>());
+        assert!(std::mem::size_of::<FieldDefinition>() <= 296, "FieldDefinition grew to {}", std::mem::size_of::<FieldDefinition>());
+        assert!(std::mem::size_of::<ConfigField>() <= 336, "ConfigField grew to {}", std::mem::size_of::<ConfigField>());
     }
 
     #[test]

@@ -523,14 +523,14 @@ pub struct PayloadField {
         skip_serializing_if = "Option::is_none",
         rename = "projectedFrom"
     )]
-    pub projected_from: Option<FieldProjection>,
+    pub projected_from: Option<Box<FieldProjection>>,
     /// The element type of an `array` field whose element is itself a typed field (a union of named types:
     /// `[(Adv | string)]`), the same nested form an entity field's `items` takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<crate::value::Shared<PayloadField>>,
     /// The declared relation of a `relation` field carried as a payload member (an entity row on the bus), whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relation: Option<RelationDefinition>,
+    pub relation: Option<Box<RelationDefinition>>,
 }
 
 /// The canonical string spelling of a resolved config literal, for comparison

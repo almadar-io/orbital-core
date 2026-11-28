@@ -269,6 +269,41 @@ fn a_quiet_row_is_dropped_and_a_later_delivery_recreates_it_from_defaults() {
     assert_eq!(named(&fresh, "SENT"), [json!({ "key": "A", "val": 5 })]);
 }
 
+/// The Slot program with a `bytes` field (declared default `""`, base64 text) that SEND fills and REPLY writes back.
+fn kernel_with_bytes() -> (RuntimeKernel, Arc<InMemoryEntityCache>) {
+    let mut program = schema(per_payload_key(), false);
+    let slot = &mut program["orbitals"][1];
+    slot["entity"]["fields"].as_array_mut().unwrap().push(json!({ "name": "buf", "type": "bytes", "default": "" }));
+    for arm in slot["traits"][0]["stateMachine"]["transitions"].as_array_mut().unwrap() {
+        let set = match (arm["from"].as_str(), arm["event"].as_str()) {
+            (Some("idle"), Some("SEND")) => json!(["set", "@entity.buf", ["bytes/from-string", "held"]]),
+            (Some("busy"), Some("REPLY")) => json!(["set", "@entity.buf", ["bytes/from-string", ""]]),
+            _ => continue,
+        };
+        arm["effects"].as_array_mut().unwrap().push(set);
+    }
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let k = crate::support::TestKernel::server().source(cache.clone() as Arc<dyn EntitySource>).build(program);
+    (k, cache)
+}
+
+// G-CROSS-852: a `bytes` field's declared default is bytes, so a row that writes it back is quiet (std-http-client).
+#[test]
+fn a_row_that_writes_its_bytes_field_back_to_the_default_is_dropped() {
+    let (k, cache) = kernel_with_bytes();
+    go(&k, json!("A"), 1);
+    assert_eq!(rows(&cache), ["A"]);
+    back(&k, json!("A"));
+    assert_eq!(rows(&cache), Vec::<String>::new(), "idle, val 0 and buf empty bytes: the row is dropped");
+}
+
+#[test]
+fn control_a_row_still_holding_bytes_is_kept() {
+    let (k, cache) = kernel_with_bytes();
+    go(&k, json!("A"), 1);
+    assert_eq!(rows(&cache), ["A"], "busy and holding bytes");
+}
+
 #[test]
 fn control_a_busy_row_is_not_dropped() {
     let (k, cache) = kernel(per_payload_key(), false);

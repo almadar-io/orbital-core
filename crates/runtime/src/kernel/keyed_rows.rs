@@ -209,6 +209,57 @@ impl RuntimeKernel {
         self.drop_keyed_row(trait_name, row)
     }
 
+    /// EXEC-STORE-4: the frame of a store ask ends once the kernel has read the driver's answer. Every trait instance
+    /// held under the ask's key goes now; one still waiting on deferred I/O goes when that settles.
+    pub(super) fn retire_store_ask(&self, key: &str) {
+        let _program = self.enter_program_session();
+        let holders: Vec<String> = self
+            .state_manager
+            .read()
+            .get_instances_for_entity(key)
+            .into_iter()
+            .map(|state| state.trait_name.clone())
+            .collect();
+        let mut waiting = false;
+        for trait_name in holders {
+            if self.has_deferred_asks(&trait_name, key) {
+                waiting = true;
+                continue;
+            }
+            if let Err(fault) = self.drop_keyed_row(&trait_name, key) {
+                let error = match fault {
+                    Fault::Kernel(error) => error.to_string(),
+                    Fault::Suspended => "it waits on the host".to_string(),
+                };
+                tracing::warn!(key, trait_name, error, "kernel: an answered store ask's frame could not be dropped");
+            }
+        }
+        if waiting {
+            self.retired_store_asks.write().insert(key.to_string());
+        }
+    }
+
+    fn has_deferred_asks(&self, trait_name: &str, row: &str) -> bool {
+        self.deferred_asks
+            .read()
+            .get(&(trait_name.to_string(), self.session_eid(row)))
+            .is_some_and(|asks| !asks.is_empty())
+    }
+
+    /// A trait of an answered store ask whose deferred I/O settled: it goes, and the ask is forgotten with its last one.
+    fn drop_retired_ask_row(&self, trait_name: &str, row: &str) -> Result<(), Fault> {
+        if self.has_deferred_asks(trait_name, row) {
+            return Ok(());
+        }
+        if self.state_manager.read().get_state(trait_name, Some(row)).is_some() {
+            self.drop_keyed_row(trait_name, row)?;
+        }
+        if self.state_manager.read().get_instances_for_entity(row).is_empty() {
+            self.retired_store_asks.write().remove(row);
+        }
+        Ok(())
+    }
+
     /// Drop the row of `trait_name` named `row`: its state, frame and entity row. The entity row stays while another
     /// session still holds an instance of it.
     pub(super) fn drop_keyed_row(&self, trait_name: &str, row: &str) -> Result<(), Fault> {
@@ -464,6 +515,9 @@ impl RuntimeKernel {
         queue: &VecDeque<CascadeItem>,
         drop: &RowDrop,
     ) -> Result<(), Fault> {
+        if self.retired_store_asks.read().contains(&drop.row) {
+            return self.drop_retired_ask_row(&drop.trait_name, &drop.row);
+        }
         if drop.settled && (!self.is_keyed_row(&drop.trait_name, &drop.row) || self.keyed_instance_missing(&drop.trait_name, &drop.row)) {
             return Ok(());
         }
@@ -494,6 +548,10 @@ impl RuntimeKernel {
         });
         if list.is_empty() {
             asks.remove(&slot);
+            drop(asks);
+            if self.retired_store_asks.read().contains(row) {
+                self.queue_quiet_checks(vec![slot]);
+            }
         }
     }
 }

@@ -852,7 +852,7 @@ pub struct ConfigField {
         skip_serializing_if = "Option::is_none",
         rename = "projectedFrom"
     )]
-    pub projected_from: Option<FieldProjection>,
+    pub projected_from: Option<Box<FieldProjection>>,
     /// The original `@config.<knob>` forward token this field's `default`
     /// collapsed FROM, when the inline phase resolved a forward against the
     /// orbital/schema rung (`forwarded_sibling_config_from`,

@@ -105,11 +105,94 @@ fn exec_dist_9_a_parked_dispatch_keeps_its_session_until_it_ends() {
 }
 
 #[test]
-fn exec_dist_9_control_a_session_whose_stream_never_opened_is_never_freed() {
+fn exec_dist_9_control_a_session_whose_stream_never_opened_is_never_freed_without_a_host_expiry() {
     let server = EmbeddedServer::new(schema()).unwrap();
     done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    server.tick_pass(1000);
     assert!(server.kernel().frame_sessions().contains(&"tab-a".to_string()));
     assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("app"));
+}
+
+const SHORT_EXPIRY: std::time::Duration = std::time::Duration::from_millis(30);
+
+fn past_the_expiry(server: &EmbeddedServer) {
+    std::thread::sleep(SHORT_EXPIRY * 2);
+    server.tick_pass(1000);
+}
+
+/// G-CROSS-590: a session that never opened its live stream is freed once quiet past the expiry its host declared, on
+/// the host's tick pass; its next request is refused as an ended session's.
+#[test]
+fn exec_dist_9_a_session_whose_stream_never_opened_is_freed_once_quiet_past_the_hosts_expiry() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.kernel().set_unconnected_session_expiry(Some(SHORT_EXPIRY));
+    done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
+    assert!(server.kernel().frame_sessions().contains(&"tab-a".to_string()), "kept while inside the expiry");
+    past_the_expiry(&server);
+    assert!(!server.kernel().frame_sessions().contains(&"tab-a".to_string()), "freed past the expiry");
+    let refused = server.start("Main", request("LOOK", "tab-a", None)).expect_err("an expired session refuses a request");
+    assert!(refused.starts_with("SESSION_ENDED"), "{refused}");
+}
+
+#[test]
+fn exec_dist_9_control_a_session_with_an_open_stream_outlives_the_unconnected_expiry() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.kernel().set_unconnected_session_expiry(Some(SHORT_EXPIRY));
+    let _stream = server.open_session_stream("tab-a");
+    done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
+    past_the_expiry(&server);
+    assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("app"));
+}
+
+#[test]
+fn edge_a_session_whose_stream_opened_and_dropped_keeps_the_stream_rule_not_the_expiry() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.kernel().set_unconnected_session_expiry(Some(std::time::Duration::from_secs(3600)));
+    let stream = server.open_session_stream("tab-a");
+    done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
+    server.close_session_stream(stream);
+    assert!(!server.kernel().frame_sessions().contains(&"tab-a".to_string()), "freed when its stream dropped, an hour early");
+}
+
+#[test]
+fn edge_a_request_inside_the_expiry_restarts_its_quiet_time() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.kernel().set_unconnected_session_expiry(Some(std::time::Duration::from_millis(120)));
+    done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    done(server.start("Main", request("SET", "tab-a", Some("again"))).unwrap());
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    server.tick_pass(1000);
+    assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("again"));
+}
+
+#[test]
+fn edge_a_parked_request_keeps_its_unconnected_session_past_the_expiry() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.kernel().set_unconnected_session_expiry(Some(SHORT_EXPIRY));
+    done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
+    let ServerProgress::Await { flight, requests } = server.start("Main", request("ASK", "tab-a", None)).unwrap() else {
+        panic!("the unkeyed call parks its dispatch");
+    };
+    past_the_expiry(&server);
+    assert!(server.kernel().frame_sessions().contains(&"tab-a".to_string()), "a running request keeps its session");
+    let replies = requests
+        .into_iter()
+        .map(|p| IoReply { id: p.id, answer: IoAnswer::Service(Ok(orbital_core_base::value::Value::Null)) })
+        .collect();
+    done(server.resume(flight, replies).unwrap());
+    assert!(server.kernel().frame_sessions().contains(&"tab-a".to_string()), "its quiet time starts when the request ends");
+}
+
+#[test]
+fn edge_an_expired_session_is_revived_by_a_mount_carrying_its_copy() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.kernel().set_unconnected_session_expiry(Some(SHORT_EXPIRY));
+    done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
+    past_the_expiry(&server);
+    done(server.start("Main", mount("tab-a", Some("kept"))).unwrap());
+    assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("kept"));
 }
 
 fn mount(client: &str, carried: Option<&str>) -> EventRequest {

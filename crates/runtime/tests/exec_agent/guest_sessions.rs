@@ -2317,6 +2317,27 @@ mod kernel_step {
         (before, counted(&kernel))
     }
 
+    // G-CROSS-852: the guest's instance count is answered per trait too, so a climbing count names its trait.
+    #[test]
+    fn a_guests_stats_count_its_instances_per_trait() {
+        let kernel = opener_granted(json!([
+            open_transition(),
+            { "from": "idle", "to": "idle", "event": "STATS", "effects": [["program/inputs", { "stats": true, "guest": "@entity.guest", "emit": emit() }]] }
+        ]), step_grant());
+        let program: Value = from_json_value(&json!({ "program": stepped_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        let stats = run(&kernel, "STATS")["got"]["stats"].clone();
+        let traits = stats["traits"].as_array().cloned().unwrap_or_default();
+        assert!(!traits.is_empty(), "{stats}");
+        let total: f64 = traits.iter().filter_map(|t| t["instances"].as_f64()).sum();
+        assert_eq!(Some(total), stats["activeInstances"].as_f64(), "the per-trait counts add up to the total: {stats}");
+        assert!(traits.iter().all(|t| t["instances"].as_f64() > Some(0.0) && t["sessions"].as_f64() >= Some(1.0)), "control: a trait holding no instance is not listed: {stats}");
+        for t in &traits {
+            let by_state: f64 = t["states"].as_array().cloned().unwrap_or_default().iter().filter_map(|s| s["instances"].as_f64()).sum();
+            assert_eq!(Some(by_state), t["instances"].as_f64(), "each trait's instances add up by state: {t}");
+        }
+    }
+
     // G-CROSS-836: a lone step restores the guest, so a trait the guest never mounted is not left as an instance.
     #[test]
     fn a_lone_step_of_a_trait_the_guest_never_mounted_leaves_no_instance_and_no_frame() {

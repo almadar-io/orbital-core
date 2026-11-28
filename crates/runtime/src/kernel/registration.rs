@@ -10,8 +10,23 @@ impl RuntimeKernel {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let traits: Vec<String> = traits.into_iter().map(Into::into).collect();
+        self.start_from_initial(&traits);
         let awaiting = self.awaiting_lifecycle(traits);
         self.mount.write().awaiting.extend(awaiting);
+    }
+
+    /// EXEC-SEED-8: every instance the current session holds of an entering trait is dropped, so it is made again at its
+    /// initial state, with its own frames (what it wrote to its `@entity`; a `[shared]` entity's frame is not its own),
+    /// and its last paint is forgotten so the lifecycle arm's paint is never taken for a repeat.
+    pub(super) fn start_from_initial(&self, traits: &[String]) {
+        self.state_manager.write().retain_instances(|state| {
+            !(traits.contains(&state.trait_name) && self.session_instance_id(state.entity_id.as_deref()).is_some())
+        });
+        self.frames.write().retain(|(key, eid), _| {
+            !(traits.contains(key) && self.session_instance_id(Some(eid)).is_some())
+        });
+        self.renders.write().forget_traits(traits.iter().map(String::as_str));
     }
 
     /// `trait_name` is held in a state a step seeded (`program/step`'s `from`): it is past its lifecycle event, so a
@@ -41,6 +56,8 @@ impl RuntimeKernel {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let traits: Vec<String> = traits.into_iter().map(Into::into).collect();
+        self.start_from_initial(&traits);
         let awaiting = self.awaiting_lifecycle(traits);
         let mut mount = self.mount.write();
         mount.awaiting.clear();
@@ -316,7 +333,7 @@ impl RuntimeKernel {
                                     .fields
                                     .iter()
                                     .filter(|f| f.intrinsic != Some(true) && f.derived.is_none())
-                                    .filter_map(|f| Some((f.name.clone()?, sexpr_to_value(f.default.as_ref()?))))
+                                    .filter_map(|f| Some((f.name.clone()?, super::field_default(f)?)))
                                     .collect(),
                                 declares_created_at: def.fields.iter().any(|f| f.name.as_deref() == Some("createdAt")),
                             },

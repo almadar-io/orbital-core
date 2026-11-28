@@ -403,6 +403,7 @@ impl EmbeddedServer {
     /// starts each as a `runTick` request to the orbital named. Same selection as the native host's tick pass for
     /// `[background]` ticks.
     pub fn tick_pass(&self, now_ms: u64) -> BTreeMap<String, Vec<FiredTick>> {
+        self.kernel.free_quiet_sessions();
         let mut clock = self.ticks.lock();
         let due = clock.due(now_ms, Calendar::local_now);
         let mut by_orbital: BTreeMap<String, Vec<FiredTick>> = BTreeMap::new();

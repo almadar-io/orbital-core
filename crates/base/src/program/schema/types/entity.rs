@@ -333,7 +333,7 @@ pub struct FieldDefinition {
 
     /// Relation definition (for relation type)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub relation: Option<RelationDefinition>,
+    pub relation: Option<Box<RelationDefinition>>,
 
     /// Array item type (for array type)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -415,7 +415,7 @@ pub struct FieldDefinition {
         skip_serializing_if = "Option::is_none",
         rename = "projectedFrom"
     )]
-    pub projected_from: Option<FieldProjection>,
+    pub projected_from: Option<Box<FieldProjection>>,
 }
 
 impl FieldDefinition {

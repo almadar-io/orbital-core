@@ -535,6 +535,7 @@ impl RuntimeKernel {
     pub(crate) fn store_reply(&self, ask: &StoreAsk, outcomes: &DispatchOutcomes) -> IoAnswer {
         use crate::store_driver::*;
         self.store_ask_frames.write().remove(&ask.key);
+        self.retire_store_ask(&ask.key);
         if ask.ensure.is_some() {
             return Self::ensure_reply(ask, outcomes);
         }

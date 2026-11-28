@@ -590,13 +590,13 @@ fn a_union_with_variant_shapes_is_not_a_by_name_reference() {
 #[test]
 fn field_shape_relation_with_definition_is_reference() {
     let mut f = bare_field(FieldType::Relation);
-    f.relation = Some(crate::schema::types::RelationDefinition {
+    f.relation = Some(Box::new(crate::schema::types::RelationDefinition {
         entity: "Article".to_string(),
         entity_id: None,
         cardinality: None,
         on_delete: None,
         display: None,
-    });
+    }));
     assert_eq!(
         field_shape(&f).unwrap(),
         OirType::Reference {
@@ -607,13 +607,13 @@ fn field_shape_relation_with_definition_is_reference() {
 
 fn relation_field(cardinality: Option<crate::schema::types::Cardinality>) -> FieldDefinition {
     let mut f = bare_field(FieldType::Relation);
-    f.relation = Some(crate::schema::types::RelationDefinition {
+    f.relation = Some(Box::new(crate::schema::types::RelationDefinition {
         entity: "Revision".to_string(),
         entity_id: None,
         cardinality,
         on_delete: None,
         display: None,
-    });
+    }));
     f
 }
 

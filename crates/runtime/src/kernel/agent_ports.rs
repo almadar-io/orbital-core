@@ -295,6 +295,7 @@ impl RuntimeKernel {
                 tables.insert(name.to_string().into(), Value::Number(bytes as f64));
             }
             counters.insert("heldBytes".to_string().into(), Value::object(tables));
+            counters.insert("traits".to_string().into(), Value::array(self.instances_by_trait()));
             answer.insert("stats".into(), Value::object(counters));
         }
         if let Some(steps) = reads.trace {
@@ -310,6 +311,50 @@ impl RuntimeKernel {
             answer.insert("trace".into(), trace);
         }
         Ok(Value::Object(answer))
+    }
+
+    /// `program/inputs { stats }`'s `traits`: every trait holding an instance, by name, with its instance count, the
+    /// sessions they are held under, the entities they key and how many sit in each state, so a count that keeps climbing
+    /// names its trait and where its instances stopped.
+    fn instances_by_trait(&self) -> Vec<Value> {
+        let mut names: Vec<String> = self.registry.trait_definitions.read().keys().cloned().collect();
+        names.sort();
+        let manager = self.state_manager.read();
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let held = manager.get_instances_for_trait(&name);
+                if held.is_empty() {
+                    return None;
+                }
+                let mut sessions = std::collections::BTreeSet::new();
+                let mut entities = std::collections::BTreeSet::new();
+                let mut in_state: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+                for state in &held {
+                    *in_state.entry(state.current_state.as_str()).or_default() += 1;
+                    let key = state.entity_id.as_deref().unwrap_or_default();
+                    let (entity, session) = key.split_once(super::dispatch_scope::SESSION_SEPARATOR).unwrap_or((key, ""));
+                    sessions.insert(session.to_string());
+                    entities.insert(entity.to_string());
+                }
+                let mut row = ValueMap::default();
+                row.insert("trait".into(), Value::string(name));
+                row.insert("instances".into(), Value::Number(held.len() as f64));
+                row.insert("sessions".into(), Value::Number(sessions.len() as f64));
+                row.insert("entities".into(), Value::Number(entities.len() as f64));
+                let states: Vec<Value> = in_state
+                    .into_iter()
+                    .map(|(name, count)| {
+                        let mut at = ValueMap::default();
+                        at.insert("state".into(), Value::string(name.to_string()));
+                        at.insert("instances".into(), Value::Number(count as f64));
+                        Value::object(at)
+                    })
+                    .collect();
+                row.insert("states".into(), Value::array(states));
+                Some(Value::object(row))
+            })
+            .collect()
     }
 
     /// `program/self`: the resolved program the calling orbital belongs to, as a value.

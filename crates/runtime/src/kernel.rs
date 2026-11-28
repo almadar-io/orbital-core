@@ -534,6 +534,8 @@ pub struct RuntimeKernel {
     /// The keys of the store asks a driver is answering now: each is the frame its driver steps in (EXEC-STORE-4), and
     /// a step there reads the key as `@entity.id`. Never persisted; a key leaves once its answer is read.
     store_ask_frames: RwLock<std::collections::HashSet<String>>,
+    /// The answered store asks whose frame still holds a trait waiting on deferred I/O: it goes once that settles.
+    retired_store_asks: RwLock<std::collections::HashSet<String>>,
     /// The trait that runs this kernel's client dispatches and the traits mounted at load (`dispatchKernel`); `None`
     /// runs each client dispatch's cascade natively.
     dispatch_kernel: RwLock<Option<orbital_core_base::schema::DispatchKernel>>,
@@ -916,6 +918,7 @@ impl RuntimeKernel {
             deferred_asks: RwLock::new(HashMap::new()),
             deferred_seq: std::sync::atomic::AtomicU64::new(0),
             store_ask_frames: RwLock::new(std::collections::HashSet::new()),
+            retired_store_asks: RwLock::new(std::collections::HashSet::new()),
             repaint_seen: RwLock::new(HashMap::new()),
             dispatch_kernel: RwLock::new(None),
             client_run: RwLock::new(None),
@@ -1255,11 +1258,26 @@ impl PendingSets {
 }
 
 /// The declared field defaults of `def` as one object, `Null` when no field declares one.
+/// A field's declared default as the value the field holds: a `bytes` field's default is written as base64 text and
+/// held as bytes, so a row that writes its bytes back to the default reads as quiet (EXEC-STEP-1b).
+pub(crate) fn field_default(field: &orbital_core_base::schema::types::FieldDefinition) -> Option<Value> {
+    let declared = sexpr_to_value(field.default.as_ref()?);
+    Some(match (&field.field_type, declared) {
+        (orbital_core_base::schema::types::FieldType::Bytes, Value::String(text)) => {
+            match orbital_core_base::codec::base64_decode(&text) {
+                Ok(bytes) => Value::bytes(bytes),
+                Err(_) => Value::String(text),
+            }
+        }
+        (_, value) => value,
+    })
+}
+
 fn declared_defaults(def: &EntityDefinition) -> Value {
     let defaults: ValueMap = def
         .fields
         .iter()
-        .filter_map(|f| Some((f.name.clone()?.into(), sexpr_to_value(f.default.as_ref()?))))
+        .filter_map(|f| Some((f.name.clone()?.into(), field_default(f)?)))
         .collect();
     if defaults.is_empty() {
         Value::Null

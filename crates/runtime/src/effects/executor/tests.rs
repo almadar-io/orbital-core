@@ -377,6 +377,42 @@ fn test_persist_create_data_call_expression_is_evaluated_not_left_literal() {
     );
 }
 
+/// G-CROSS-849: a persist whose data holds an operator call that fails at run time must fail the
+/// persist and write nothing. It used to fall back to plain binding substitution, which stored the
+/// call itself (`["array/remove", [...], 3]`) as the field's value; every later read of the entity
+/// then failed its declaration.
+#[test]
+fn test_persist_data_that_fails_to_evaluate_fails_the_persist_and_writes_nothing() {
+    let persistence = Arc::new(InMemoryPersistence::new());
+    let created = persistence
+        .create("Plan", &from_json_str(r#"{"steps": [1, 2, 3]}"#).unwrap())
+        .unwrap();
+    let plan_id = created.as_object().unwrap().get("id").unwrap().as_str().unwrap().to_string();
+    let executor = EffectExecutor::server().with_persistence(persistence.clone());
+    let update = |index: usize| Effect::Persist {
+        operation: PersistOperation::Update,
+        entity_type: "Plan".to_string(),
+        data: from_json_str(&format!(r#"{{"id": "{plan_id}", "steps": ["array/remove", [1, 2, 3], {index}]}}"#)).unwrap(),
+        id: None,
+        emit: None,
+        guard: None,
+    };
+
+    let failed = executor.execute(&update(3), &BindingContext::new());
+    assert!(failed.is_failed(), "an index past the end must fail the persist: {failed:?}");
+    let row = persistence.read("Plan", &plan_id).unwrap();
+    assert_eq!(
+        row.as_object().unwrap().get("steps"),
+        Some(&from_json_str("[1, 2, 3]").unwrap()),
+        "the row must be untouched, never hold the unevaluated call"
+    );
+
+    let done = executor.execute(&update(1), &BindingContext::new());
+    assert!(done.is_executed(), "control: an index inside the array runs: {done:?}");
+    let row = persistence.read("Plan", &plan_id).unwrap();
+    assert_eq!(row.as_object().unwrap().get("steps"), Some(&from_json_str("[1, 3]").unwrap()));
+}
+
 /// B4-V3 (Rust twin): the JS runtime's persist handler used to fall
 /// back to the submitted data when the store denied a write, so a
 /// denied delete logged `persist:success` and fired the declared
@@ -1226,6 +1262,21 @@ mod derived_fields {
         let results = over(Arc::new(Pushing(store.clone()))).execute_persist_run(&effects, &BindingContext::new());
         assert!(results.iter().all(|r| !r.is_failed()), "{results:?}");
         assert_eq!(stored(&store, "r1")["emailKey"], json!("two@x.y"));
+    }
+
+    #[test]
+    fn a_persist_in_a_run_whose_data_fails_to_evaluate_fails_alone_and_writes_nothing() {
+        let store = Arc::new(InMemoryPersistence::new());
+        let effects = vec![
+            persist(PersistOperation::Create, "Person", None, json!({ "id": "r1", "email": "ONE@X.Y", "tags": ["a", "b"] })),
+            persist(PersistOperation::Update, "Person", Some("r1"), json!({ "tags": ["array/remove", ["a", "b"], 2] })),
+            persist(PersistOperation::Update, "Person", Some("r1"), json!({ "email": "Two@X.Y" })),
+        ];
+        let results = over(Arc::new(Pushing(store.clone()))).execute_persist_run(&effects, &BindingContext::new());
+        assert!(!results[0].is_failed() && results[1].is_failed() && !results[2].is_failed(), "{results:?}");
+        let row = stored(&store, "r1");
+        assert_eq!(row["tags"], json!(["a", "b"]), "the failed persist wrote nothing");
+        assert_eq!(row["emailKey"], json!("two@x.y"), "control: the persists beside it still ran");
     }
 
     #[test]

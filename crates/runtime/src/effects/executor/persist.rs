@@ -23,11 +23,17 @@ impl EffectExecutor {
 
         if self.persistence.is_some() {
             // Resolve bindings in data before persisting
-            let resolved_data = self.resolve_persist_data(data, ctx);
+            let resolved_data = match self.resolve_persist_data(data, ctx) {
+                Ok(resolved) => resolved,
+                Err(message) => {
+                    self.log_store_failure("Persist", entity_type, &message);
+                    return EffectResult::failed(effect, &message);
+                }
+            };
             self.persist_resolved(
                 operation,
                 entity_type,
-                resolved_data.as_ref(),
+                &resolved_data,
                 id,
                 ctx,
                 effect,

@@ -1,6 +1,7 @@
 //! A client session's lifetime (EXEC-DIST-9). The kernel frees a session's states and frames once its live streams
 //! have all dropped and nothing of its own runs or waits: no request it is serving, no work a host reports pending.
-//! Hosts report only I/O facts (a stream opened or dropped, work outstanding); the kernel decides.
+//! Hosts report only I/O facts (a stream opened or dropped, work outstanding); the kernel decides. A session whose
+//! stream never opened is freed once it has been quiet for the expiry its host declared (owner 2026-11-28, G-CROSS-590).
 
 use super::*;
 use orbital_core_base::sync::Mutex;
@@ -17,13 +18,16 @@ pub(super) type EndedSession = Box<[Box<str>]>;
 #[derive(Default)]
 struct Life {
     streams: usize,
+    opened: bool,
     dropped: bool,
     active: usize,
+    idle_since_ms: i64,
 }
 
 /// Every client session's lifetime, and what freeing one drops.
 pub(super) struct SessionLives {
     lives: Mutex<HashMap<String, Life>>,
+    unconnected_expiry_ms: RwLock<Option<i64>>,
     pending: RwLock<Option<Arc<dyn SessionPending>>>,
     guests: Arc<RwLock<HashMap<String, guests::GuestSession>>>,
     mounts: Arc<RwLock<mount_ledger::MountLedger>>,
@@ -50,7 +54,7 @@ impl SessionLives {
         themes: Arc<RwLock<HashMap<String, Arc<str>>>>,
         pages: Arc<RwLock<HashMap<String, Arc<str>>>>,
     ) -> Self {
-        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), guests, mounts, views, frames, carried_rows, state_manager, ended, identities, themes, pages }
+        Self { lives: Mutex::new(HashMap::new()), unconnected_expiry_ms: RwLock::new(None), pending: RwLock::new(None), guests, mounts, views, frames, carried_rows, state_manager, ended, identities, themes, pages }
     }
 
     /// Free `session` and mark it ended: a request but a mount to it is refused until a mount revives it.
@@ -70,14 +74,21 @@ impl SessionLives {
         self.lives.lock().get(session).is_some_and(|life| life.dropped)
     }
 
-    /// Free every session whose streams have all dropped and that is quiet. The freeing happens under the lives lock,
-    /// so a request is admitted either before (it keeps the session) or after (it meets the ended session), never between.
+    /// Free every quiet session whose streams have all dropped, or that never opened one and has been quiet past the
+    /// host's expiry. The freeing happens under the lives lock, so a request is admitted either before (it keeps the
+    /// session) or after (it meets the ended session), never between.
     fn free_quiet(&self) {
         let pending = self.pending.read().clone();
+        let expiry = *self.unconnected_expiry_ms.read();
+        let now = orbital_core_base::time_util::now_millis();
         let mut lives = self.lives.lock();
         let quiet: Vec<String> = lives
             .iter()
-            .filter(|(session, life)| life.dropped && life.active == 0 && !pending.as_ref().is_some_and(|p| p.pending(session)))
+            .filter(|(session, life)| {
+                let ended = life.dropped
+                    || (!life.opened && expiry.is_some_and(|expiry| now.saturating_sub(life.idle_since_ms) >= expiry));
+                ended && life.active == 0 && !pending.as_ref().is_some_and(|p| p.pending(session))
+            })
             .map(|(session, _)| session.clone())
             .collect();
         for session in quiet {
@@ -136,6 +147,7 @@ impl Drop for SessionActive {
     fn drop(&mut self) {
         if let Some(life) = self.lives.lives.lock().get_mut(&self.session) {
             life.active = life.active.saturating_sub(1);
+            life.idle_since_ms = orbital_core_base::time_util::now_millis();
         }
         self.lives.free_quiet();
     }
@@ -163,6 +175,7 @@ impl RuntimeKernel {
         let mut lives = self.session_lives.lives.lock();
         let life = lives.entry(session.to_string()).or_default();
         life.streams += 1;
+        life.opened = true;
         life.dropped = false;
         SessionStream { lives: Arc::clone(&self.session_lives), session: session.to_string() }
     }
@@ -181,7 +194,15 @@ impl RuntimeKernel {
         })
     }
 
-    /// Free every quiet session whose streams have dropped: a host calls it when work it reported pending ends.
+    /// How long a session whose live stream never opened may stay quiet before it is freed (EXEC-DIST-9). The host
+    /// declares it; `None`, the default, never frees such a session.
+    pub fn set_unconnected_session_expiry(&self, expiry: Option<std::time::Duration>) {
+        *self.session_lives.unconnected_expiry_ms.write() = expiry.map(|expiry| i64::try_from(expiry.as_millis()).unwrap_or(i64::MAX));
+        self.session_lives.free_quiet();
+    }
+
+    /// Free every quiet session whose streams have dropped or whose unconnected expiry passed: a host calls it when
+    /// work it reported pending ends, and on each tick pass.
     pub fn free_quiet_sessions(&self) {
         self.session_lives.free_quiet();
     }
